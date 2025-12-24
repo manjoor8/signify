@@ -26,3 +26,23 @@ Clone the repository and install the dependencies:
 git clone [https://github.com/manjoor8/signify.git](https://github.com/manjoor8/signify.git)
 cd signify
 pip install -r requirements.txt
+
+### 3. Create a Virtual Environment (Recommended)
+```bash
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+# Mac/Linux
+python3 -m venv venv
+source venv/bin/activate
+
+### 4. Install Dependencies
+```bash
+pip install -r requirements.txt
+
+### 5. Run the Application
+```bash
+python app.py
+Visit http://127.0.0.1:5000 in your web browser.
+
