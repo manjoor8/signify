@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>AI PDF Signer</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.1/fabric.min.js"></script>
+    <style>
+        body { background: #f0f2f5; }
+        .editor-box { background: white; border-radius: 12px; padding: 20px; box-shadow: 0 8px 24px rgba(0,0,0,0.15); margin-top: 20px; }
+        .canvas-bg { background: #525659; padding: 20px; border-radius: 8px; overflow: auto; display: flex; justify-content: center; }
+        .toolbar { border-bottom: 1px solid #eee; padding-bottom: 15px; margin-bottom: 20px; }
+        canvas { box-shadow: 0 0 10px rgba(0,0,0,0.5); }
+    </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark bg-dark shadow">
+    <div class="container">
+        <span class="navbar-brand">PDF Signer Pro</span>
+        <button class="btn btn-primary" onclick="downloadSigned()">Finish & Download</button>
+    </div>
+</nav>
+
+<div class="container">
+    <div class="editor-box">
+        <div class="toolbar row g-3">
+            <div class="col-md-3">
+                <label class="form-label small fw-bold">UPLOAD PDF</label>
+                <input type="file" id="pdf-file" class="form-control form-control-sm" accept=".pdf">
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small fw-bold">ADD SIGNATURE (IMAGE)</label>
+                <input type="file" id="sig-file" class="form-control form-control-sm" accept="image/*">
+            </div>
+            <div class="col-md-4">
+                <label class="form-label small fw-bold">ADD TEXT</label>
+                <div class="input-group input-group-sm">
+                    <input type="text" id="text-input" class="form-control" placeholder="Type here...">
+                    <button class="btn btn-secondary" onclick="addText()">Add</button>
+                </div>
+            </div>
+            <div class="col-md-2 d-flex align-items-end">
+                <button class="btn btn-sm btn-danger w-100" onclick="deleteSelected()">Delete Selected</button>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-center align-items-center mb-3">
+            <div id="page-nav" class="btn-group d-none">
+                <button class="btn btn-outline-dark" onclick="changePage(-1)">Previous</button>
+                <span id="page-num" class="btn btn-outline-dark disabled">Page 1 / 1</span>
+                <button class="btn btn-outline-dark" onclick="changePage(1)">Next</button>
+            </div>
+        </div>
+
+        <div class="canvas-bg">
+            <canvas id="pdf-canvas"></canvas>
+        </div>
+        <p class="text-muted small mt-2 text-center">Shortcuts: <b>Ctrl+C</b> to copy, <b>Ctrl+V</b> to paste (works across pages), <b>Del</b> to remove.</p>
+    </div>
+</div>
+
+<script>
+    const canvas = new fabric.Canvas('pdf-canvas');
+    let pdfPages = [];
+    let currentPage = 0;
+    let elementStore = {}; // Memory for all pages
+    let clipboard = null;
+
+    // 1. PDF Upload Logic
+    document.getElementById('pdf-file').onchange = async (e) => {
+        const formData = new FormData();
+        formData.append('pdf', e.target.files[0]);
+        const res = await fetch('/upload_pdf', { method: 'POST', body: formData });
+        const data = await res.json();
+        pdfPages = data.pages;
+        elementStore = {}; // Clear store for new document
+        renderPage(0);
+        document.getElementById('page-nav').classList.remove('d-none');
+    };
+
+    // 2. Signature Upload (Process Transparency)
+    document.getElementById('sig-file').onchange = async (e) => {
+        const formData = new FormData();
+        formData.append('signature', e.target.files[0]);
+        const res = await fetch('/process_sig', { method: 'POST', body: formData });
+        const data = await res.json();
+        fabric.Image.fromURL(data.image, (img) => {
+            img.scaleToWidth(150);
+            img.set({ left: 50, top: 50, cornerColor: '#0d6efd' });
+            canvas.add(img);
+            canvas.setActiveObject(img);
+        });
+    };
+
+    // 3. Text Logic
+    function addText() {
+        const val = document.getElementById('text-input').value;
+        if(!val) return;
+        const text = new fabric.IText(val, { left: 100, top: 100, fontSize: 20, fontFamily: 'Arial' });
+        canvas.add(text);
+        document.getElementById('text-input').value = '';
+    }
+
+    // 4. Page Rendering & State Persistence
+    function renderPage(idx) {
+        saveCurrentState();
+        currentPage = idx;
+        const page = pdfPages[idx];
+        
+        canvas.clear();
+        canvas.setDimensions({ width: page.width, height: page.height });
+        
+        fabric.Image.fromURL(page.image, (img) => {
+            canvas.setBackgroundImage(img, canvas.renderAll.bind(canvas));
+            
+            // Reload elements stored for this page
+            if (elementStore[idx]) {
+                elementStore[idx].forEach(obj => {
+                    if(obj.type === 'image') {
+                        fabric.Image.fromURL(obj.data, (s) => {
+                            s.set({ left: obj.x, top: obj.y, scaleX: obj.sw, scaleY: obj.sh });
+                            canvas.add(s);
+                        });
+                    } else {
+                        const t = new fabric.IText(obj.data, { left: obj.x, top: obj.y, fontSize: obj.size });
+                        canvas.add(t);
+                    }
+                });
+            }
+        });
+        document.getElementById('page-num').innerText = `Page ${idx + 1} / ${pdfPages.length}`;
+    }
+
+    function saveCurrentState() {
+        if (pdfPages.length === 0) return;
+        const objects = canvas.getObjects().filter(o => o !== canvas.backgroundImage);
+        elementStore[currentPage] = objects.map(o => ({
+            type: o.type === 'image' ? 'image' : 'text',
+            x: o.left, y: o.top,
+            sw: o.scaleX || 1, sh: o.scaleY || 1,
+            w: o.getScaledWidth(), h: o.getScaledHeight(),
+            data: o.type === 'image' ? o._element.src : o.text,
+            size: o.fontSize || 20
+        }));
+    }
+
+    function changePage(dir) {
+        let n = currentPage + dir;
+        if (n >= 0 && n < pdfPages.length) renderPage(n);
+    }
+
+    // 5. Delete, Copy & Paste
+    function deleteSelected() {
+        canvas.getActiveObjects().forEach(obj => canvas.remove(obj));
+        canvas.discardActiveObject().renderAll();
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (document.activeElement.tagName === 'INPUT') return;
+
+        // Copy (Ctrl+C)
+        if (e.ctrlKey && e.key === 'c') {
+            const active = canvas.getActiveObject();
+            if (active) {
+                active.clone(cloned => { clipboard = cloned; });
+            }
+        }
+        // Paste (Ctrl+V)
+        if (e.ctrlKey && e.key === 'v' && clipboard) {
+            clipboard.clone(cloned => {
+                canvas.discardActiveObject();
+                cloned.set({ left: cloned.left + 15, top: cloned.top + 15, evented: true });
+                if (cloned.type === 'activeSelection') {
+                    cloned.canvas = canvas;
+                    cloned.forEach(obj => canvas.add(obj));
+                    cloned.setCoords();
+                } else {
+                    canvas.add(cloned);
+                }
+                canvas.setActiveObject(cloned);
+                canvas.requestRenderAll();
+            });
+        }
+        // Delete
+        if (e.key === "Delete" || e.key === "Backspace") deleteSelected();
+    });
+
+    // 6. Final Save
+    async function downloadSigned() {
+        saveCurrentState();
+        let allElements = [];
+        for (let p in elementStore) {
+            elementStore[p].forEach(el => allElements.push({ ...el, page: parseInt(p) }));
+        }
+        const res = await fetch('/save_pdf', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ elements: allElements })
+        });
+        const data = await res.json();
+        window.location.href = data.url;
+    }
+</script>
+</body>
+</html>
